@@ -1,6 +1,8 @@
 package compilation;
 
 import ir.*;
+import ir.datatype.IRArrayType;
+import ir.operand.IRVariableOperand;
 
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -36,18 +38,52 @@ public class InstructionSelector {
         for (IRFunction function: program.functions) {
             printStream.printf("%s:%n", function.name); // TODO: initialize function variables
             for (String assembly: this.generateArguments(function)) printStream.println(assembly);
+            for (String assembly: this.generateVariableInitialization(function)) printStream.println(assembly);
             for (int i = 0; i < function.instructions.size(); i++) {
                 this.instruction = function.instructions.get(i);
-                for (String assembly: this.map(function.name)) printStream.println(assembly);
+                for (String assembly: this.map(function)) printStream.println(assembly);
             }
 
             if (function.name.equals("main")) {
                 printStream.println("li $v0, 10");
                 printStream.println("syscall");
             } else {
+                if (function.returnType == null) printStream.println("jr $ra");
                 printStream.println(); // empty line after function for readability
             }
         }
+    }
+
+    private ArrayList<String> assignArray(String array, int size, String value) {
+        ArrayList<String> instructions = new ArrayList<>();
+        String operation = "li";
+        if (value.contains("$")) operation = "move";
+
+        if (size > 0) instructions.add(String.format("%s $temp, %s", operation, value));
+        for (int i = 0; i < size; i++) instructions.add(String.format("sw $temp, %d($%s)", i * 4, array));
+
+        return instructions;
+    }
+
+    private ArrayList<String> generateVariableInitialization(IRFunction function) {
+        ArrayList<String> instructions = new ArrayList<>();
+        for (IRVariableOperand op: function.variables) {
+            if (!function.parameters.contains(op)) {
+                String name = op.getName();
+                if (op.type instanceof IRArrayType) {
+                    IRArrayType type = (IRArrayType) op.type;
+                    instructions.add("li $v0, 9");
+                    instructions.add(String.format("li $a0, %d", type.getSize()));
+                    instructions.add("syscall");
+                    instructions.add(String.format("move $%s, $v0", name));
+                    instructions.addAll(this.assignArray(name, type.getSize(), "0"));
+                } else {
+                    instructions.add(String.format("li $%s, 0", name));
+                }
+            }
+        }
+
+        return instructions;
     }
 
     private ArrayList<String> generateArguments(IRFunction function) {
@@ -66,14 +102,16 @@ public class InstructionSelector {
         return instructions;
     }
 
-    private ArrayList<String> generateCallInitialization(String functionLabel, boolean ret) {
+    private ArrayList<String> generateCallInitialization(IRFunction function, String functionLabel, boolean ret) {
         ArrayList<String> instructions = new ArrayList<>();
-//        instructions.add("addi $sp, $sp, -40");
-//
-//        for (int i = 0; i < 10; i++) {
-//            instructions.add(String.format("sw $t%d, %d($sp)", i, (9 - i) * 4));
-//        }
-//
+        int numVariables = function.variables.size();
+
+        instructions.add(String.format("addi $sp, $sp, %d", numVariables * -4));
+        for (int i = 0; i < numVariables; i++) {
+            IRVariableOperand op = function.variables.get(i);
+            instructions.add(String.format("sw $%s, %d($sp)", op.getName(), (numVariables - i - 1) * 4));
+        }
+
         int start = 1;
         if (ret) start = 2;
         int length = this.instruction.operands.length;
@@ -89,24 +127,25 @@ public class InstructionSelector {
             if (j < 4) {
                 instructions.add(String.format("%s $a%d, %s", operation, j, op));
             } else {
-                instructions.add(String.format("%s $t0, %s", operation, op));
-                instructions.add(String.format("sw $t0, %d($sp)", (numArgs - j - 1) * 4));
+                instructions.add(String.format("%s $temp, %s", operation, op));
+                instructions.add(String.format("sw $temp, %d($sp)", (numArgs - j - 1) * 4));
             }
             j++;
         }
-//
-//        instructions.add("addi $sp, $sp, -4");
-//        instructions.add("sw $ra, 0($sp)");
+
+        instructions.add("addi $sp, $sp, -4");
+        instructions.add("sw $ra, 0($sp)");
         instructions.add(String.format("jal %s", functionLabel));
-//        instructions.add("lw $ra, 0($sp)");
-//        instructions.add("addi $sp, $sp, 4");
-//        if (numArgs > 4) instructions.add(String.format("addi $sp, $sp, %d", (numArgs - 4) * 4));
-//
-//        for (int i = 0; i < 10; i++) {
-//            instructions.add(String.format("lw $t%d, %d($sp)", i, (9 - i) * 4));
-//        }
-//        instructions.add("addi $sp, $sp, 40");
-//
+        instructions.add("lw $ra, 0($sp)");
+        instructions.add("addi $sp, $sp, 4");
+        if (numArgs > 4) instructions.add(String.format("addi $sp, $sp, %d", (numArgs - 4) * 4));
+
+        for (int i = 0; i < numVariables; i++) {
+            IRVariableOperand op = function.variables.get(i);
+            instructions.add(String.format("lw $%s, %d($sp)", op.getName(), (numVariables - i - 1) * 4));
+        }
+        instructions.add(String.format("addi $sp, $sp, %d", numVariables * 4));
+
         if (ret) {
             String op = this.getOperand(0);
             instructions.add(String.format("move %s, $v0", op));
@@ -152,46 +191,82 @@ public class InstructionSelector {
         }
     }
 
-    private String[] mapArithmetic(String operation) {
-        String lvalue = this.getOperand(0);
-        String op1 = this.getOperand(1);
-        String op2 = this.getOperand(2);
-        String assembly = String.format("%s %s, %s, %s", operation, lvalue, op1, op2);
+    private String[] mapBinary(String operation) {
+        String x = this.getOperand(0);
+        String y = this.getOperand(1);
+        String z = this.getOperand(2);
+        ArrayList<String> instructions = new ArrayList<>();
+        String first = y, second = z;
+        boolean hasImmediateForm = operation.equals("add") || operation.equals("and") || operation.equals("or");
 
-        return new String[] {assembly};
+        if (!y.contains("$") && !z.contains("$")) {
+            instructions.add(String.format("li $temp, %s", y));
+            instructions.add(String.format("li $temp2, %s", z));
+            first = "$temp";
+            second = "$temp2";
+        }
+        else if (!y.contains("$")) {
+            if (hasImmediateForm) {
+                operation += "i";
+                first = z;
+                second = y;
+            } else {
+                instructions.add(String.format("li $temp, %s", y));
+                first = "$temp";
+            }
+        }
+        else if (!z.contains("$")) {
+            if (hasImmediateForm) operation += "i";
+            else {
+                instructions.add(String.format("li $temp2, %s", z));
+                second = "$temp2";
+            }
+        }
+
+        instructions.add(String.format("%s %s, %s, %s", operation, x, first, second));
+        String[] instructionsArray = new String[instructions.size()];
+
+        return instructions.toArray(instructionsArray);
     }
 
     private String[] mapBranch(String functionName, String condition) {
         String label = this.getOperand(0).substring(1); // strip $ symbol
-        String op1 = this.getOperand(1);
-        String op2 = this.getOperand(2);
-        if (!op2.contains("$")) {
-            String load = String.format("li $branch, %s", op2);
-            String assembly = String.format("%s %s, $branch, %s_%s", condition, op1, functionName, label);
+        String y = this.getOperand(1);
+        String z = this.getOperand(2);
+        ArrayList<String> instructions = new ArrayList<>();
 
-            return new String[] {load, assembly};
+        String first = y, second = z;
+        if (!y.contains("$")) {
+            instructions.add(String.format("li $temp, %s", y));
+            first = "$temp";
+        }
+        if (!z.contains("$")) {
+            instructions.add(String.format("li $temp2, %s", z));
+            second = "$temp2";
         }
 
-        String assembly = String.format("%s %s, %s, %s_%s", condition, op1, op2, functionName, label);
+        instructions.add(String.format("%s %s, %s, %s_%s", condition, first, second, functionName, label));
+        String[] instructionsArray = new String[instructions.size()];
 
-
-        return new String[] {assembly};
+        return instructions.toArray(instructionsArray);
     }
 
     private String[] mapAssign() {
-        String op1 = this.getOperand(0);
+        String x = this.getOperand(0);
         String op2 = this.getOperand(1);
         String assembly;
 
         if (this.instruction.operands.length == 3) {
-            String op3 = this.getOperand(3);
-            assembly = "";
-        } else {
-            String operation = "li";
-            if (op2.contains("$")) operation = "move";
-            assembly = String.format("%s %s, %s", operation, op1, op2);
+            String value = this.getOperand(2);
+            ArrayList<String> instructions = this.assignArray(x, Integer.parseInt(op2), value);
+            String[] instructionsArray = new String[instructions.size()];
+
+            return instructions.toArray(instructionsArray);
         }
 
+        String operation = "li";
+        if (op2.contains("$")) operation = "move";
+        assembly = String.format("%s %s, %s", operation, x, op2);
 
         return new String[] {assembly};
     }
@@ -203,24 +278,24 @@ public class InstructionSelector {
         return new String[] {assembly};
     }
 
-    private String[] mapFunction(boolean ret) {
+    private String[] mapFunction(IRFunction function, boolean ret) {
         String functionLabel = this.getOperand(0);
         if (ret) functionLabel = this.getOperand(1);
         functionLabel = functionLabel.substring(1); // strip $ symbol
 
         if (intrinsicFunctions.containsKey(functionLabel)) return this.mapIntrinsicFunction(functionLabel);
 
-        ArrayList<String> callInitialization = this.generateCallInitialization(functionLabel, ret);
+        ArrayList<String> callInitialization = this.generateCallInitialization(function, functionLabel, ret);
         String[] instructions = new String[callInitialization.size()];
 
         return callInitialization.toArray(instructions);
     }
 
     private String[] mapReturn() {
-        String op = this.getOperand(0);
+        String x = this.getOperand(0);
         String operation = "li";
-        if (op.contains("$")) operation = "move";
-        String move = String.format("%s $v0, %s", operation, op);
+        if (x.contains("$")) operation = "move";
+        String move = String.format("%s $v0, %s", operation, x);
         String ret = "jr $ra";
 
         return new String[] {move, ret};
@@ -232,44 +307,93 @@ public class InstructionSelector {
         return new String[] {"", assembly}; // empty line before label for readability
     }
 
-    private String[] map(String functionName) {
+    private String[] mapArrayLoad() {
+        String x = this.getOperand(0);
+        String array = this.getOperand(1);
+        String offset = this.getOperand(2);
+        ArrayList<String> instructions = new ArrayList<>();
+
+        if (offset.contains("$")) {
+            instructions.add("li $temp, 4");
+            instructions.add(String.format("mul $temp, %s, $temp", offset));
+            instructions.add(String.format("add $temp, %s, $temp", array));
+            offset = "0";
+            array = "$temp";
+        }
+
+        instructions.add(String.format("lw %s, %d(%s)", x, Integer.parseInt(offset) * 4, array));
+        String[] instructionsArray = new String[instructions.size()];
+
+        return instructions.toArray(instructionsArray);
+    }
+
+    private String[] mapArrayStore() {
+        String x = this.getOperand(0);
+        String array = this.getOperand(1);
+        String offset = this.getOperand(2);
+        ArrayList<String> instructions = new ArrayList<>();
+
+        if (offset.contains("$")) {
+            instructions.add("li $temp, 4");
+            instructions.add(String.format("mul $temp, %s, $temp", offset));
+            instructions.add(String.format("add $temp, %s, $temp", array));
+            offset = "0";
+            array = "$temp";
+        }
+
+        if (!x.contains("$")) {
+            instructions.add(String.format("li $temp2, %s", x));
+            x = "$temp2";
+        }
+
+        instructions.add(String.format("sw %s, %d(%s)", x, Integer.parseInt(offset) * 4, array));
+        String[] instructionsArray = new String[instructions.size()];
+
+        return instructions.toArray(instructionsArray);
+    }
+
+    private String[] map(IRFunction function) {
         switch (this.instruction.opCode) {
             case ADD:
-                return mapArithmetic("add");
+                return mapBinary("add");
             case SUB:
-                return mapArithmetic("sub");
+                return mapBinary("sub");
             case MULT:
-                return mapArithmetic("mul");
+                return mapBinary("mul");
             case DIV:
-                return mapArithmetic("div");
+                return mapBinary("div");
             case AND:
-                return mapArithmetic("and");
+                return mapBinary("and");
             case OR:
-                return mapArithmetic("or");
+                return mapBinary("or");
             case BREQ:
-                return mapBranch(functionName, "beq");
+                return mapBranch(function.name, "beq");
             case BRGEQ:
-                return mapBranch(functionName, "bge");
+                return mapBranch(function.name, "bge");
             case BRGT:
-                return mapBranch(functionName, "bgt");
+                return mapBranch(function.name, "bgt");
             case BRLEQ:
-                return mapBranch(functionName, "ble");
+                return mapBranch(function.name, "ble");
             case BRLT:
-                return mapBranch(functionName, "blt");
+                return mapBranch(function.name, "blt");
             case BRNEQ:
-                return mapBranch(functionName, "bne");
+                return mapBranch(function.name, "bne");
             case ASSIGN:
                 return mapAssign();
             case GOTO:
-                return mapGoto(functionName);
+                return mapGoto(function.name);
             case CALL:
-                return mapFunction(false);
+                return mapFunction(function, false);
             case CALLR:
-                return mapFunction(true);
+                return mapFunction(function, true);
             case RETURN:
                 return mapReturn();
             case LABEL:
-                return mapLabel(functionName);
+                return mapLabel(function.name);
+            case ARRAY_LOAD:
+                return mapArrayLoad();
+            case ARRAY_STORE:
+                return mapArrayStore();
             default:
                 return new String[0];
         }
