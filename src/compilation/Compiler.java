@@ -37,11 +37,4 @@ public class Compiler {
             printStream.println(instruction);
         }
     }
-
-    private String getOperand(String instruction, int operand)
-    {
-        instruction = instruction.replace(',','');
-        String[] operands = instruction.split(" ");
-        return operands[operand];
-    }
 }
