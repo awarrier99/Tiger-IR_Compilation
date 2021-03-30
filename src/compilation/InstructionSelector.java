@@ -2,46 +2,130 @@ package compilation;
 
 import ir.*;
 import ir.datatype.IRArrayType;
+import ir.operand.IRFunctionOperand;
 import ir.operand.IRVariableOperand;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 
 public class InstructionSelector {
+    private final HashMap<IRInstruction, BasicBlock> leaderBlockMap = new HashMap<>();
+    public final HashMap<MIPSInstructionPair, BasicBlock> mipsLeaderBlockMap = new HashMap<>();
+    public final HashSet<MIPSInstructionPair> functionEndMap = new HashSet<>();
     private final IRProgram program;
     private IRInstruction instruction;
-    private static final HashMap<String, Integer> intrinsicFunctions;
+
+    private static final HashMap<String, Integer> intrinsicFunctions = new HashMap<>();
+    private static final HashSet<IRInstruction.OpCode> branchCodes = new HashSet<>();
 
     static {
-        intrinsicFunctions = new HashMap<>();
         intrinsicFunctions.put("geti", 5);
         intrinsicFunctions.put("getc", 12);
         intrinsicFunctions.put("puti", 1);
         intrinsicFunctions.put("putc", 11);
+
+        branchCodes.add(IRInstruction.OpCode.BREQ);
+        branchCodes.add(IRInstruction.OpCode.BRGEQ);
+        branchCodes.add(IRInstruction.OpCode.BRGT);
+        branchCodes.add(IRInstruction.OpCode.BRLT);
+        branchCodes.add(IRInstruction.OpCode.BRLEQ);
+        branchCodes.add(IRInstruction.OpCode.BRNEQ);
     }
 
     public InstructionSelector(IRProgram program) {
         this.program = program;
     }
 
+    private HashSet<IRInstruction> getLeaders() {
+        boolean branchSuccessor = false;
+        boolean funcSuccessor = false;
+        HashSet<IRInstruction> leaders = new HashSet<>();
+        for (IRFunction function: this.program.functions) {
+            for (int i = 0; i < function.instructions.size(); i++) {
+                IRInstruction instruction = function.instructions.get(i);
+                if (instruction.opCode == IRInstruction.OpCode.LABEL) {
+                    leaders.add(instruction);
+                }
+                else if (i == 0) leaders.add(instruction);
+                else if (branchSuccessor || funcSuccessor) leaders.add(instruction);
+
+                if (branchSuccessor) branchSuccessor = false;
+                if (funcSuccessor) funcSuccessor = false;
+                if (branchCodes.contains(instruction.opCode)) branchSuccessor = true;
+                if (instruction.opCode == IRInstruction.OpCode.CALL || instruction.opCode == IRInstruction.OpCode.CALLR) {
+                    int pos = instruction.opCode == IRInstruction.OpCode.CALL ? 0 : 1;
+                    if (!intrinsicFunctions.containsKey(((IRFunctionOperand) instruction.operands[pos]).getName())) funcSuccessor = true;
+                }
+            }
+        }
+
+        return leaders;
+    }
+
+    private void generateBasicBlocks() {
+        HashSet<IRInstruction> leaders = this.getLeaders();
+
+        for (IRInstruction leader: leaders) {
+            ArrayList<IRInstruction> instructions = new ArrayList<>();
+            instructions.add(leader);
+            this.leaderBlockMap.put(leader, new BasicBlock(instructions));
+        }
+
+        BasicBlock block = this.leaderBlockMap.get(this.program.functions.get(0).instructions.get(0));
+        for (IRFunction function: this.program.functions) {
+            for (IRInstruction instruction: function.instructions) {
+                if (leaders.contains(instruction)) block = this.leaderBlockMap.get(instruction);
+                else block.irInstructions.add(instruction);
+            }
+        }
+
+//        for (IRInstruction leader: leaders) Debug.printBasicBlock(this.leaderBlockMap.get(leader));
+    }
+
     public ArrayList<String> generate() {
+        this.generateBasicBlocks();
         ArrayList<String> instructions = new ArrayList<>();
 
         instructions.add(".text");
-        instructions.add("beq $zero, $zero, main");
+        instructions.add("beq $zero, $zero, main"); // TODO: remove for SPIM
         for (IRFunction function: program.functions) {
-            instructions.add(function.name + ":");
-            instructions.addAll(this.generateArguments(function));
-            instructions.addAll(this.generateVariableInitialization(function));
+            BasicBlock block = this.leaderBlockMap.get(function.instructions.get(0));
+            block.mipsInstructions.add(function.name + ":");
+            block.mipsInstructions.addAll(this.generateArguments(function));
+            block.mipsInstructions.addAll(this.generateVariableInitialization(function));
+            instructions.addAll(block.mipsInstructions);
+            MIPSInstructionPair pair = new MIPSInstructionPair(block.mipsInstructions.get(0), instructions.size() - block.mipsInstructions.size());
+            this.mipsLeaderBlockMap.put(pair, block);
+
             for (int i = 0; i < function.instructions.size(); i++) {
                 this.instruction = function.instructions.get(i);
-                instructions.addAll(this.map(function));
+                ArrayList<String> assembly = this.map(function);
+                instructions.addAll(assembly);
+                if (i != 0 && leaderBlockMap.containsKey(this.instruction)) {
+                    block = this.leaderBlockMap.get(this.instruction);
+                    pair = new MIPSInstructionPair(assembly.get(0), instructions.size() - assembly.size());
+                    this.mipsLeaderBlockMap.put(pair, block);
+                }
+                block.mipsInstructions.addAll(assembly);
+                if (i == function.instructions.size() - 1) {
+                    pair = new MIPSInstructionPair(assembly.get(assembly.size() - 1), instructions.size() - 1);
+                    this.functionEndMap.add(pair);
+                }
             }
 
             if (function.name.equals("main")) {
-                instructions.add("li $v0, 10");
-                instructions.add("syscall");
-            } else if (function.returnType == null) instructions.add("jr $ra");
+                String load = "li $v0, 10";
+                String syscall = "syscall";
+                instructions.add(load);
+                instructions.add(syscall);
+                block.mipsInstructions.add(load);
+                block.mipsInstructions.add(syscall);
+            } else if (function.returnType == null) {
+                String ret = "jr $ra";
+                instructions.add(ret);
+                block.mipsInstructions.add(ret);
+            }
         }
 
         return instructions;
@@ -259,7 +343,7 @@ public class InstructionSelector {
         String label = this.getOperand(0).substring(1); // strip $ symbol
         ArrayList<String> instructions = new ArrayList<>();
 
-        instructions.add(String.format("beq $zero, $zero, %s_%s", functionName, label));
+        instructions.add(String.format("beq $zero, $zero, %s_%s", functionName, label)); // TODO: change to b on SPIM
 
         return instructions;
     }
