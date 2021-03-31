@@ -26,7 +26,7 @@ public class Compiler {
         ArrayList<String> instructions = selector.generate();
 
         RegisterAllocator allocator;
-        if (naiveAllocation) allocator = new NaiveRegisterAllocator();
+        if (naiveAllocation) allocator = new NaiveRegisterAllocator2(selector.functionOffsetMaps);
         else allocator = new IntraBlockRegisterAllocator(selector.mipsLeaderBlockMap, selector.functionOffsetMaps);
         instructions = allocator.allocate(instructions);
 
