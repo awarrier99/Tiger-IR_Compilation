@@ -157,6 +157,9 @@ public class InstructionSelector {
             }
         }
 
+        instructions.add("li $temp, 0");
+        instructions.add("li $temp2, 0");
+
         return instructions;
     }
 

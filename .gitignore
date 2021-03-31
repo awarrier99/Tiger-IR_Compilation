@@ -2,3 +2,5 @@
 out/
 *.iml
 *.s
+quicksort.out
+prime.out
