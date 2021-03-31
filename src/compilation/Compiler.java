@@ -1,7 +1,6 @@
 package compilation;
 
 import ir.IRException;
-import ir.IRInstruction;
 import ir.IRProgram;
 import ir.IRReader;
 
@@ -9,8 +8,6 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.PrintStream;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Map;
 
 public class Compiler {
     public static void main(String[] args) throws FileNotFoundException, IRException {
@@ -30,7 +27,7 @@ public class Compiler {
 
         RegisterAllocator allocator;
         if (naiveAllocation) allocator = new NaiveRegisterAllocator();
-        else allocator = new IntraBlockRegisterAllocator(selector.mipsLeaderBlockMap, selector.functionEndMap);
+        else allocator = new IntraBlockRegisterAllocator(selector.mipsLeaderBlockMap, selector.functionOffsetMaps);
         instructions = allocator.allocate(instructions);
 
         FileOutputStream outputFile = new FileOutputStream(outputFilename);

@@ -12,7 +12,7 @@ import java.util.HashSet;
 public class InstructionSelector {
     private final HashMap<IRInstruction, BasicBlock> leaderBlockMap = new HashMap<>();
     public final HashMap<MIPSInstructionPair, BasicBlock> mipsLeaderBlockMap = new HashMap<>();
-    public final HashSet<MIPSInstructionPair> functionEndMap = new HashSet<>();
+    public final HashMap<String, HashMap<String, Integer>> functionOffsetMaps = new HashMap<>();
     private final IRProgram program;
     private IRInstruction instruction;
 
@@ -92,6 +92,7 @@ public class InstructionSelector {
         for (IRFunction function: program.functions) {
             BasicBlock block = this.leaderBlockMap.get(function.instructions.get(0));
             block.mipsInstructions.add(function.name + ":");
+            this.functionOffsetMaps.put(function.name + ":", new HashMap<>());
             block.mipsInstructions.addAll(this.generateArguments(function));
             block.mipsInstructions.addAll(this.generateVariableInitialization(function));
             instructions.addAll(block.mipsInstructions);
@@ -108,10 +109,6 @@ public class InstructionSelector {
                     this.mipsLeaderBlockMap.put(pair, block);
                 }
                 block.mipsInstructions.addAll(assembly);
-                if (i == function.instructions.size() - 1) {
-                    pair = new MIPSInstructionPair(assembly.get(assembly.size() - 1), instructions.size() - 1);
-                    this.functionEndMap.add(pair);
-                }
             }
 
             if (function.name.equals("main")) {

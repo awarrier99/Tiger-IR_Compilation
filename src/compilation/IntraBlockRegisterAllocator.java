@@ -5,8 +5,8 @@ import java.util.stream.Collectors;
 
 public class IntraBlockRegisterAllocator implements RegisterAllocator {
     private final HashMap<MIPSInstructionPair, BasicBlock> mipsLeaderBlockMap;
-    private final HashMap<String, Integer> offsetMap = new HashMap<>();
-    public final HashSet<MIPSInstructionPair> functionEndMap;
+    public final HashMap<String, HashMap<String, Integer>> functionOffsetMaps;
+    private HashMap<String, Integer> offsetMap = new HashMap<>();
 
     private static final HashSet<String> defInstructions = new HashSet<>();
     private static final HashSet<String> ignoreRegisterList = new HashSet<>();
@@ -47,9 +47,9 @@ public class IntraBlockRegisterAllocator implements RegisterAllocator {
         jumpInstructions.add("jr");
     }
 
-    public IntraBlockRegisterAllocator(HashMap<MIPSInstructionPair, BasicBlock> mipsLeaderBlockMap, HashSet<MIPSInstructionPair> functionEndMap) {
+    public IntraBlockRegisterAllocator(HashMap<MIPSInstructionPair, BasicBlock> mipsLeaderBlockMap, HashMap<String, HashMap<String, Integer>> functionOffsetMaps) {
         this.mipsLeaderBlockMap = mipsLeaderBlockMap;
-        this.functionEndMap = functionEndMap;
+        this.functionOffsetMaps = functionOffsetMaps;
     }
 
     private String getOperation(String instruction) {
@@ -59,18 +59,21 @@ public class IntraBlockRegisterAllocator implements RegisterAllocator {
         return instruction.substring(0, spacePos);
     }
 
-    private ArrayList<String> getOperands(String instruction) {
+    private ArrayList<String> getOperands(String instruction, ArrayList<Integer> offsets) {
         int spacePos = instruction.indexOf(' ');
         if (spacePos == -1) return new ArrayList<>();
 
         return Arrays.stream(instruction.substring(spacePos + 1).split(","))
                 .map(i -> {
+                    Integer offset = null;
                     i = i.strip();
                     int pos = i.indexOf('(');
                     if (pos != -1) {
+                        offset = Integer.parseInt(i.substring(0, pos).strip());
                         i = i.substring(pos + 1, i.indexOf(')'));
                     }
 
+                    offsets.add(offset);
                     return i;
                 })
                 .collect(Collectors.toCollection(ArrayList::new));
@@ -82,7 +85,7 @@ public class IntraBlockRegisterAllocator implements RegisterAllocator {
 
         String instruction = block.mipsInstructions.get(index);
         String op = this.getOperation(instruction);
-        ArrayList<String> operands = this.getOperands(instruction);
+        ArrayList<String> operands = this.getOperands(instruction, new ArrayList<>());
         if (defInstructions.contains(op)) operands.remove(0);
 
         for (int i = 0; i < index; i++) {
@@ -90,7 +93,7 @@ public class IntraBlockRegisterAllocator implements RegisterAllocator {
             String currOp = this.getOperation(curr);
             if (currOp == null) continue;
 
-            String defOperand = this.getOperands(curr).get(0);
+            String defOperand = this.getOperands(curr, new ArrayList<>()).get(0);
             if (!ignoreRegisterList.contains(defOperand) && defInstructions.contains(currOp) && operands.contains(defOperand))
                 vars.add(defOperand);
         }
@@ -106,7 +109,7 @@ public class IntraBlockRegisterAllocator implements RegisterAllocator {
             String op = this.getOperation(instruction);
             if (!defInstructions.contains(op)) continue;;
 
-            ArrayList<String> operands = this.getOperands(instruction);
+            ArrayList<String> operands = this.getOperands(instruction, new ArrayList<>());
             String defOperand = operands.get(0);
             if (ignoreRegisterList.contains(defOperand)) continue;
             if (counted.contains(defOperand)) continue;
@@ -115,7 +118,7 @@ public class IntraBlockRegisterAllocator implements RegisterAllocator {
             for (int j = i + 1; j < block.mipsInstructions.size(); j++) {
                 String curr = block.mipsInstructions.get(j);
                 String currOp = this.getOperation(curr);
-                ArrayList<String> currOperands = this.getOperands(curr);
+                ArrayList<String> currOperands = this.getOperands(curr, new ArrayList<>());
                 if (defInstructions.contains(currOp)) currOperands.remove(0);
 
                 if (currOperands.contains(defOperand)) {
@@ -149,7 +152,7 @@ public class IntraBlockRegisterAllocator implements RegisterAllocator {
             HashSet<String> ueVars = this.upwardsExposedVariables(block, mipsInstructionPair.index);
             HashSet<String> varKill = new HashSet<>();
             if (defInstructions.contains(this.getOperation(mipsInstructionPair.instruction)))
-                varKill.add(this.getOperands(mipsInstructionPair.instruction).get(0));
+                varKill.add(this.getOperands(mipsInstructionPair.instruction, new ArrayList<>()).get(0));
             HashSet<String> temp = new HashSet<>(instructionLiveOut);
             temp.removeAll(varKill);
             temp.addAll(ueVars);
@@ -190,12 +193,21 @@ public class IntraBlockRegisterAllocator implements RegisterAllocator {
         return storeVariables;
     }
 
+    private String replaceOperand(String operation, ArrayList<String> operands, ArrayList<Integer> offsets, int opIndex, String replacement) {
+        Integer offset = offsets.get(opIndex);
+        if (offset != null) replacement = String.format("%d(%s)", offset, replacement);
+        operands.set(opIndex, replacement);
+
+        return String.format("%s %s", operation, String.join(", ", operands));
+    }
+
     private ArrayList<String> allocateBlock(BasicBlock block, int index) {
         ArrayList<String> instructions = new ArrayList<>();
         int firstAvailable = 0;
         HashMap<String, Integer> usesMap = new HashMap<>(block.usesMap);
         HashMap<String, String> localRegisterMap = new HashMap<>();
         boolean endOnBranchOrJump = false;
+        boolean functionEnd = false;
 
         while (!usesMap.isEmpty()) {
             String maxUsedDef = Collections.max(usesMap.entrySet(), Comparator.comparingInt(Map.Entry::getValue)).getKey();
@@ -205,18 +217,48 @@ public class IntraBlockRegisterAllocator implements RegisterAllocator {
 
         HashSet<String> locallyInitialized = new HashSet<>();
         boolean deleteRestores = false;
+        boolean matchedFirst = false;
+        boolean functionBlock = block.mipsInstructions.contains("sw $ra, 0($sp)");
+        boolean deleteStores = false;
+        boolean deleted = false;
+
         for (int i = 0; i < block.mipsInstructions.size(); i++) {
             String instruction = block.mipsInstructions.get(i);
+            if (instruction.contains(":") && this.functionOffsetMaps.containsKey(instruction))
+                this.offsetMap = functionOffsetMaps.get(instruction);
 
-            if (deleteRestores && !instruction.matches("addi \\$sp, \\$sp, -?\\d+")) continue;
-            else if (deleteRestores) {
-                deleteRestores = false;
-                continue;
+            if (!deleteStores && !deleted && functionBlock) {
+                boolean isAdd = instruction.matches("addi \\$sp, \\$sp, -?\\d+");
+                boolean nextIsStore = i != block.mipsInstructions.size() - 1 &&
+                        block.mipsInstructions.get(i + 1).matches("sw \\$.+, \\d+\\(\\$.+\\)");
+                if (isAdd && nextIsStore){
+                    deleteStores = true;
+                    continue;
+                }
+            }
+            if (deleteStores && instruction.matches("sw \\$.+, \\d+\\(\\$.+\\)")) continue;
+            else if (deleteStores) {
+                deleteStores = false;
+                deleted = true;
+            }
+
+            if (deleteRestores) {
+                if (instruction.matches("lw \\$.+, \\d+\\(\\$.+\\)") && !instruction.contains("$ra")) {
+                    matchedFirst = true;
+                    continue;
+                } else if (matchedFirst && instruction.matches("addi \\$sp, \\$sp, -?\\d+")) {
+                    deleteRestores = false;
+                    matchedFirst = false;
+                    continue;
+                }
             }
 
             ArrayList<String> suffix = new ArrayList<>();
             String operation = this.getOperation(instruction);
-            ArrayList<String> operands = this.getOperands(instruction);
+            ArrayList<Integer> offsets = new ArrayList<>();
+            ArrayList<String> operands = this.getOperands(instruction, offsets);
+            boolean t8Used = false;
+            HashSet<String> tempLocal = new HashSet<>();
 
             for (int j = 0; j < operands.size(); j++) {
                 String op = operands.get(j);
@@ -230,23 +272,36 @@ public class IntraBlockRegisterAllocator implements RegisterAllocator {
                             instructions.add("addi $sp, $sp, -4");
                         }
                         if (!localRegisterMap.containsKey(op)) {
-                            instruction = instruction.replace(op, "$t8");
+                            instruction = this.replaceOperand(operation, operands, offsets, j, "$t8");
                             suffix.add(String.format("sw $t8, %d($sp)", this.offsetMap.get(op) * 4));
                         }
-                        locallyInitialized.add(op);
+                        tempLocal.add(op);
                     } else if (!localRegisterMap.containsKey(op)) {
                         String register;
-                        if (j == 1) register = "$t8";
+                        if (!t8Used) {
+                            register = "$t8";
+                            t8Used = true;
+                        }
                         else register = "$t9";
                         instructions.add(String.format("lw %s, %d($sp)", register, this.offsetMap.get(op) * 4));
-                        instruction = instruction.replace(op, register);
-                    }
+                        instruction = this.replaceOperand(operation, operands, offsets, j, register);
+                    } else instructions.add(String.format("lw %s, %d($sp)", localRegisterMap.get(op), this.offsetMap.get(op) * 4));
                 } else if (!localRegisterMap.containsKey(op)) {
-                    instruction = instruction.replace(op, "$t8");
-                    if (j == 0 && defInstructions.contains(op))
+                    String register = "$t8";
+                    if (j == 0 && defInstructions.contains(operation))
                         suffix.add(String.format("sw $t8, %d($sp)", this.offsetMap.get(op) * 4));
+                    else {
+                        if (!t8Used) {
+                            register = "$t8";
+                            t8Used = true;
+                        }
+                        else register = "$t9";
+                        instructions.add(String.format("lw %s, %d($sp)", register, this.offsetMap.get(op) * 4));
+                    }
+                    instruction = this.replaceOperand(operation, operands, offsets, j, register);
                 }
-                if (localRegisterMap.containsKey(op)) instruction = instruction.replace(op, localRegisterMap.get(op));
+                if (localRegisterMap.containsKey(op))
+                    instruction = this.replaceOperand(operation, operands, offsets, j, localRegisterMap.get(op));
             }
             instructions.add(instruction);
             instructions.addAll(suffix);
@@ -257,37 +312,25 @@ public class IntraBlockRegisterAllocator implements RegisterAllocator {
             }
             if (jumpInstructions.contains(operation)) {
                 endOnBranchOrJump = true;
-
+                int insertOffset = 1;
                 if ("jal".equals(operation)) {
                     deleteRestores = true;
-                    boolean matchedRAStackAllocation = false;
-                    int startDelete = instructions.size() - 1;
-                    int endDelete = startDelete;
-                    for (int j = instructions.size() - 1; j >= 0; j--) {
-                        String curr = instructions.get(j);
-                        if (curr.matches("addi \\$sp, \\$sp, -?\\d+")) {
-                            if (matchedRAStackAllocation) startDelete = j;
-                            else {
-                                matchedRAStackAllocation = true; // skip past $ra stack allocation
-                                endDelete = j;
-                            }
-                        }
-                    }
-                    ArrayList<String> deleted = new ArrayList<>(instructions.subList(0, startDelete));
-                    deleted.addAll(instructions.subList(endDelete, instructions.size()));
-                    instructions = deleted;
-                    instructions.addAll(instructions.size() - 3, this.generateStoreVariables(localRegisterMap)); // before $ra stack allocation
+                    insertOffset = 3;
                 }
+                instructions.addAll(instructions.size() - insertOffset, this.generateStoreVariables(localRegisterMap)); // before $ra stack allocation
             }
 
-            if (this.functionEndMap.contains(new MIPSInstructionPair(instruction, index))) {
-
+            if (instruction.equals("jr $ra")) {
+                functionEnd = true;
+                instructions.add(instructions.size() - 1, String.format("addi $sp, $sp, %d", this.offsetMap.size() * 4));
             }
+
+            if (!tempLocal.isEmpty()) locallyInitialized.addAll(tempLocal);
 
             index++;
         }
 
-        if (!endOnBranchOrJump) instructions.addAll(this.generateStoreVariables(localRegisterMap));
+        if (!functionEnd && !endOnBranchOrJump) instructions.addAll(this.generateStoreVariables(localRegisterMap));
 
         return instructions;
     }
@@ -310,6 +353,6 @@ public class IntraBlockRegisterAllocator implements RegisterAllocator {
             }
         }
 
-        return instructions;
+        return allocatedInstructions;
     }
 }
