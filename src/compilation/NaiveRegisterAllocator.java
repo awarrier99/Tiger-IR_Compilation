@@ -18,7 +18,7 @@ public class NaiveRegisterAllocator implements RegisterAllocator {
             String operation = getOperand(instruction, 0);
             if (operation.equals("li") || operation.equals("move")) {
                 String dest = getOperand(instruction, 1);
-                if (!vRegisters.containsKey(dest))
+                if (!vRegisters.containsKey(dest) && !real.contains(dest))
                     vRegisters.put(dest, (vRegisters.size() + 1) * -4);
             }
         }
