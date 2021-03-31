@@ -142,11 +142,14 @@ public class NaiveRegisterAllocator implements RegisterAllocator {
         //this.allocInst.add("Branch");
         if (first.contains("$") && second.contains("$")) {
             generateNaivePrefix(new String[]{first, second});
-            this.allocInst.add(String.format("%s $t0, $t1, %s", operation, function));
+            String reg1 = (real.contains(first)) ? first : "t0";
+            String reg2 = (real.contains(second)) ? second : "t1";
+            this.allocInst.add(String.format("%s %s, %s, %s", operation, reg1, reg2, function));
             generateNaiveSuffix(new String[]{first, second});
         } else if (first.contains("$")) {
             generateNaivePrefix(new String[]{first});
-            this.allocInst.add(String.format("%s $t0, %s, %s", operation, second, function));
+            String reg1 = (real.contains(first)) ? first : "t0";
+            this.allocInst.add(String.format("%s %s, %s, %s", operation, reg1, second, function));
             generateNaiveSuffix(new String[]{first});
         }
     }
