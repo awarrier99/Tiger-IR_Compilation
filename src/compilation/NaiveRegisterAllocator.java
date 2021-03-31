@@ -8,7 +8,7 @@ public class NaiveRegisterAllocator implements RegisterAllocator {
 
     private HashMap<String, Integer> vRegisters = new HashMap<>();
     private ArrayList<String> allocInst = new ArrayList<>();
-    private final String[] realReg = {"$sp", "$fp", "$zero", "$ra"};
+    private final String[] realReg = {"$sp", "$fp", "$zero", "$ra", "$v0", "$a0", "a1", "a2", "a3"};
     private final ArrayList<String> real = new ArrayList<>(Arrays.asList(realReg));
 
     @Override
@@ -19,10 +19,9 @@ public class NaiveRegisterAllocator implements RegisterAllocator {
             if (operation.equals("li") || operation.equals("move")) {
                 String dest = getOperand(instruction, 1);
                 if (!vRegisters.containsKey(dest))
-                    vRegisters.put(dest, (vRegisters.size() + 1) * 4);
+                    vRegisters.put(dest, (vRegisters.size() + 1) * -4);
             }
         }
-        this.allocInst.add(String.format("addi $sp, $sp, %d", (vRegisters.size() + 1) * 4));
         for (String instruction : instructions) {
             String operation = getOperand(instruction, 0);
             switch (operation) {
@@ -54,10 +53,17 @@ public class NaiveRegisterAllocator implements RegisterAllocator {
                     allocateMemory(instruction);
                     break;
                 default:
+
                     this.allocInst.add(instruction);
+                    if (instruction.equals("main:"))
+                    {
+                        this.allocInst.add("move $fp, $sp");
+                        this.allocInst.add(String.format("addi $sp, $sp, %d", (vRegisters.size() + 1) * -4));
+                    }
                     break;
             }
         }
+        this.allocInst.add(String.format("addi $sp, $sp, %d", (vRegisters.size() + 1) * 4));
         return this.allocInst;
     }
 
@@ -67,7 +73,7 @@ public class NaiveRegisterAllocator implements RegisterAllocator {
         String lvalue = getOperand(instruction, 1);
         String op1 = getOperand(instruction, 2);
         String op2 = getOperand(instruction, 3);
-        this.allocInst.add("Binary");
+        //this.allocInst.add("Binary");
         String reg1, reg2, reg3;
         //instruction = String.format("%s %s, %s, %s", operation, lvalue, op1, op2);
 
@@ -143,7 +149,7 @@ public class NaiveRegisterAllocator implements RegisterAllocator {
 
         } else if (operation.equals("sw")) {
             reg1 = (real.contains(first)) ? first : "$t0";
-            reg2 = (real.contains(offsetReg)) ? offsetReg : "$t0";
+            reg2 = (real.contains(offsetReg)) ? offsetReg : "$t1";
             generateNaivePrefix(new String[]{first, offsetReg});
             this.allocInst.add(String.format("sw %s, %s(%s)", reg1, offset, reg2));
         }
