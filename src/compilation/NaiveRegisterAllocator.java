@@ -22,6 +22,7 @@ public class NaiveRegisterAllocator implements RegisterAllocator {
                     vRegisters.put(dest, (vRegisters.size() + 1) * -4);
             }
         }
+        instructions.add(instructions.size() - 2,String.format("addi $sp, $sp, %d", (vRegisters.size() + 1) * 4));
         for (String instruction : instructions) {
             String operation = getOperand(instruction, 0);
             switch (operation) {
@@ -63,7 +64,7 @@ public class NaiveRegisterAllocator implements RegisterAllocator {
                     break;
             }
         }
-        this.allocInst.add(String.format("addi $sp, $sp, %d", (vRegisters.size() + 1) * 4));
+
         return this.allocInst;
     }
 
@@ -103,15 +104,33 @@ public class NaiveRegisterAllocator implements RegisterAllocator {
         String operation = getOperand(instruction, 0);
         //this.allocInst.add("Assign");
         if (operation.equals("li")) {
+
             String dest = getOperand(instruction, 1);
-            String imm = getOperand(instruction, 2);
-            this.allocInst.add(String.format("addi $t0, $zero, %s", imm));
-            this.allocInst.add(String.format("sw $t0, %d($fp)", vRegisters.get(dest)));
+            if (real.contains(dest))
+            {
+                this.allocInst.add(instruction);
+            }
+            else {
+                String imm = getOperand(instruction, 2);
+                this.allocInst.add(String.format("addi $t0, $zero, %s", imm));
+                this.allocInst.add(String.format("sw $t0, %d($fp)", vRegisters.get(dest)));
+            }
         } else if (operation.equals("move")) {
             String dest = getOperand(instruction, 1);
             String src = getOperand(instruction, 2);
-            this.allocInst.add(String.format("lw $t0, %d($fp)", vRegisters.get(src)));
-            this.allocInst.add(String.format("sw $t0, %d($fp)", vRegisters.get(dest)));
+
+            if (!real.contains(src)) {
+                this.allocInst.add(String.format("lw $t0, %d($fp)", vRegisters.get(src)));
+            } else if(!real.contains(dest)) {
+                this.allocInst.add(String.format("move $t0, %s", src));
+                this.allocInst.add(String.format("sw $t0, %d($fp)", vRegisters.get(dest)));
+            } else {
+                this.allocInst.add(String.format("move %s, %s", dest, src));
+            }
+            if (!real.contains(src) && !real.contains(dest))
+            {
+                this.allocInst.add(String.format("sw $t0, %d($fp)", vRegisters.get(dest)));
+            }
         }
     }
 
