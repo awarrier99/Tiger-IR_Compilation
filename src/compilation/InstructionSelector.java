@@ -147,7 +147,7 @@ public class InstructionSelector {
                 if (op.type instanceof IRArrayType) {
                     IRArrayType type = (IRArrayType) op.type;
                     instructions.add("li $v0, 9");
-                    instructions.add(String.format("li $a0, %d", type.getSize()));
+                    instructions.add(String.format("li $a0, %d", type.getSize() * 4));
                     instructions.add("syscall");
                     instructions.add(String.format("move $%s, $v0", name));
                     instructions.addAll(this.assignArray(name, type.getSize(), "0"));
